@@ -29,7 +29,7 @@ if ($nibeAPI->debugActive)
 
 if (empty($_GET)) {
     // The Navigation Bar
-	$navbar[1]['Name'] = "Einstellungen";
+	$navbar[1]['Name'] = "Settings";
 	$navbar[1]['URL'] = 'config.cgi';
 	$navbar[2]['Name'] = "Nibe API";
 	$navbar[2]['URL'] = 'index.php';

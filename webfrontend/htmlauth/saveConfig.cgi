@@ -28,7 +28,7 @@ $pcfg->param('Section.redirect_url', $form{redirect_url});
 $pcfg->save();
 
 our %navbar;
-$navbar{1}{Name} = "Einstellungen";
+$navbar{1}{Name} = "Settings";
 $navbar{1}{URL} = 'config.cgi';
 $navbar{1}{active} = 1;
  
