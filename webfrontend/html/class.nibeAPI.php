@@ -105,7 +105,27 @@ class NibeAPI {
 			{
 				case 200:
 					$data = json_decode($response);
-					$success = true;  // Set success to true for any 200 response
+					if ($data !== false) {
+						$success = true;
+						// Check if this is a smart-home-mode request and format=loxone
+						if (strpos($URI, 'smart-home-mode') !== false && isset($_GET['format']) && $_GET['format'] === 'loxone') {
+							$mode = $data->smartHomeMode;
+							$numericValue = 9; // default value
+							switch($mode) {
+								case "Normal":
+									$numericValue = 0;
+									break;
+								case "Away":
+									$numericValue = 1;
+									break;
+								case "Vacation":
+									$numericValue = 2;
+									break;
+							}
+							echo $numericValue;
+							exit;
+						}
+					}
 				break;
 
 				case 401:
@@ -132,7 +152,56 @@ class NibeAPI {
 
 	function putAPI($URI, $postBody, $token, &$success = 'undefined')
 	{
-		return $this->postPutAPI($URI, "PUT", $postBody, $token, $success);
+		$curl = curl_init();
+
+		curl_setopt_array($curl, array(
+			CURLOPT_URL => $this->apiBaseUrl . "/" . $URI,
+			CURLOPT_RETURNTRANSFER => true,
+			CURLOPT_CUSTOMREQUEST => "PUT",
+			CURLOPT_POSTFIELDS => $postBody,
+			CURLOPT_HTTPHEADER => array(
+				"Authorization: Bearer " . $token->access_token,
+				"Content-Type: application/json-patch+json",
+				"Accept: */*"
+			),
+		));
+
+		$response = curl_exec($curl);
+		$data = false;
+		$success = false;
+
+		if ($response === false)
+		{
+			echo 'Curl Error: ' . curl_error($curl);
+		}
+		else
+		{
+			switch ($http_code = curl_getinfo($curl, CURLINFO_HTTP_CODE))
+			{
+				case 200:
+				case 204:
+					$success = true;
+					$data = json_decode($response);
+					if ($data === null) {
+						$data = (object)["status" => $http_code];
+					}
+				break;
+
+				case 401:
+					// Token might be expired, try to refresh
+					if ($this->debugActive) echo "Token expired, attempting refresh...<br />\n";
+					$newToken = $this->authorize($token->refresh_token, true);
+					if ($newToken) {
+						$this->save_token($newToken);
+						return $this->putAPI($URI, $postBody, $newToken, $success);
+					}
+					// Fall through to default case if refresh fails
+				default:
+					$data = "Unexpected HTTP Code: " . $http_code . "<br />\nResponse:<br />\n" . $response;
+			}
+		}
+		curl_close ($curl);
+		return $data;
 	}
 
 	function postPutAPI($URI, $method, $postBody, $token, &$success = 'undefined')
@@ -278,8 +347,18 @@ class NibeAPI {
 
 	function setSystemSmartHomeMode($token, $systemId, $mode)
 	{
-		$postBody = json_encode(array("mode" => $mode));
-		return $this->putAPI("systems/" . $systemId . "/smart-home-mode", $postBody, $token);
+		$postBody = json_encode(array("smartHomeMode" => $mode));
+		$result = $this->putAPI("systems/" . $systemId . "/smart-home-mode", $postBody, $token);
+		
+		// If successful, return a simple success response
+		if (isset($result->status) && ($result->status == 200 || $result->status == 204)) {
+			echo "OK";
+			exit;
+		}
+		
+		// If there was an error, return the error
+		echo "ERROR";
+		exit;
 	}
 
 	function getDevices($token, $systemId)
