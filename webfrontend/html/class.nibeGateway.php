@@ -6,6 +6,18 @@ class NibeGateway {
 		$this->nibeAPI = $nibeAPI;
 	}
 
+	function formatForLoxone($data) {
+		$output = "";
+		if (is_array($data)) {
+			foreach ($data as $point) {
+				if (isset($point->parameterId) && isset($point->value)) {
+					$output .= '"parameterId": ' . $point->parameterId . ', "value": ' . $point->value . "\n";
+				}
+			}
+		}
+		return $output;
+	}
+
 	function main()
 	{
 		// handle API callback if needed
@@ -69,7 +81,7 @@ class NibeGateway {
 				elseif (isset($_GET["put"]) && isset($_GET["data"]))
 				{
 					$functionURI=$_GET["put"];
-					$postBody=$_GET["data"]; // ex: "{\n  \"mode\": \"DEFAULT_OPERATION\"\n}"
+					$postBody=$_GET["data"];
 					$response = $this->nibeAPI->putAPI($functionURI, $postBody, $token, $success);
 					if ($success)
 					{
@@ -79,8 +91,18 @@ class NibeGateway {
 				elseif (isset($_GET["post"]) && isset($_GET["data"]))
 				{
 					$functionURI=$_GET["post"];
-					$postBody=$_GET["data"]; // ex: "{\n  \"mode\": \"DEFAULT_OPERATION\"\n}"
+					$postBody=$_GET["data"];
 					$response = $this->nibeAPI->postAPI($functionURI, $postBody, $token, $success);
+					if ($success)
+					{
+						header("HTTP/1.0 204 No Content");
+					}
+				}
+				elseif (isset($_GET["patch"]) && isset($_GET["data"]))
+				{
+					$functionURI=$_GET["patch"];
+					$patchBody=$_GET["data"];
+					$response = $this->nibeAPI->patchAPI($functionURI, $patchBody, $token, $success);
 					if ($success)
 					{
 						header("HTTP/1.0 204 No Content");
@@ -95,50 +117,25 @@ class NibeGateway {
 					echo "Missing parameter systemId";
 					die();
 				}
-				$systemId =  urlencode($_GET["systemId"]);
+				$systemId = $_GET["systemId"];
 
 				if (isset($_GET["smartHomeMode"])) // DEFAULT_OPERATION , AWAY_FROM_HOME , VACATION
 				{
-					$postBody="{\n  \"mode\": \"" . urlencode($_GET["smartHomeMode"]) . "\"\n}";
-					$response = $this->nibeAPI->putAPI("systems/" . $systemId . "/smarthome/mode", $postBody, $token, $success);
+					$response = $this->nibeAPI->setSystemSmartHomeMode($token, $systemId, $_GET["smartHomeMode"], $success);
 					if ($success)
 					{
 						header("HTTP/1.0 204 No Content");
 					}
 				}
 
-				elseif (isset($_GET["hotWaterBoost"])) // DEFAULT_OPERATION , AWAY_FROM_HOME , VACATION
+				elseif (isset($_GET["hotWaterBoost"]))
 				{
-					$postBody="{\n  \"settings\": {\n    \"hot_water_boost\": " . urlencode($_GET["hotWaterBoost"]) . "\n  }\n}";
+					$postBody = json_encode(array(
+						"settings" => array(
+							"hot_water_boost" => $_GET["hotWaterBoost"]
+						)
+					));
 					$response = $this->nibeAPI->putAPI("systems/" . $systemId . "/parameters", $postBody, $token, $success);
-				}
-
-				elseif (isset($_GET["thermostat"]))
-				{
-					if (!isset($_GET["actualTemp"]) && !isset($_GET["targetTemp"]))
-					{
-						header("HTTP/1.0 400 Bad Request");
-						echo "Nothing to set";
-						die();
-					}
-					$postBody="{\n";
-
-					if (isset($_GET["externalId"])) { $postBody.="  \"externalId\": " . urlencode($_GET["externalId"]) . ",\n"; }
-					else { $postBody.="  \"externalId\": 0,\n"; }
-
-					$postBody.="  \"name\": \"" . urlencode($_GET["thermostat"]) . "\",\n";
-
-					if (isset($_GET["actualTemp"])) { $postBody.="  \"actualTemp\": " . urlencode($_GET["actualTemp"]) . ",\n"; }
-					if (isset($_GET["targetTemp"])) { $postBody.="  \"targetTemp\": " . urlencode($_GET["targetTemp"]) . ",\n"; }
-					if (isset($_GET["climateSystems"])) { $postBody.="  \"climateSystems\": [\n    " . urlencode($_GET["climateSystems"]) . "\n  ]\n}"; }
-					else { $postBody.="  \"climateSystems\": [\n    1\n  ]\n}"; }
-
-
-					$response = $this->nibeAPI->postAPI("systems/" . $systemId . "/smarthome/thermostats", $postBody, $token, $success);
-					if ($success)
-					{
-						header("HTTP/1.0 204 No Content");
-					}
 				}
 			}
 
@@ -148,8 +145,25 @@ class NibeGateway {
 				print_r($response);
 				die(1);
 			}
-			$output = json_encode($response, JSON_PRETTY_PRINT);
-			if (isset($_GET["format"]) && $_GET["format"] == "pretty") $output = "<pre>" . $output . "</pre>";
+
+			// Format the response based on the format parameter
+			if (isset($_GET["format"])) {
+				switch ($_GET["format"]) {
+					case "pretty":
+						$output = "<pre>" . json_encode($response, JSON_PRETTY_PRINT) . "</pre>";
+						break;
+					case "loxone":
+						$output = $this->formatForLoxone($response);
+						break;
+					case "json":
+					default:
+						$output = json_encode($response);
+						break;
+				}
+			} else {
+				$output = json_encode($response);
+			}
+
 			echo $output;
 			die();
 		}
@@ -159,6 +173,7 @@ class NibeGateway {
 			$this->displayStatusPage();
 		}
 	}
+
 	function displayStatusPage()
 	{
 		$token = $this->nibeAPI->checkToken();
@@ -167,10 +182,11 @@ class NibeGateway {
 			$URL = $this->nibeAPI->authorizationURL();
 
 			echo "You're not authorized yet.<br /><br />\n";
-			echo "<b>Important:</b> If you haven't done that yet, create an application on <a href=\"https://api.nibeuplink.com\">https://api.nibeuplink.com</a> first and update the config section in the index.php (this file).<br ><br />\n";
-			echo "If you think you're ready to connect this bridge to the Nibe API, click <a href=\"$URL\">here</a>.";
+			echo "<b>Important:</b> If you haven't done that yet, create an application on <a href=\"https://api.myuplink.com\">https://api.myuplink.com</a> first and update the config section in the index.php (this file).<br ><br />\n";
+			echo "If you think you're ready to connect this bridge to the MyUplink API, click <a href=\"$URL\">here</a>.";
 			die();
 		}
+
 		if (isset($_GET["autoUpdate"]) && $_GET["autoUpdate"] == "true")
 		{
 			header("refresh:5;url=" . $_SERVER['PHP_SELF'] . "?autoUpdate=true");
@@ -180,6 +196,7 @@ class NibeGateway {
 		{
 			echo "<center><a href=\"" . $_SERVER['PHP_SELF'] . "?autoUpdate=true\">Enable auto refresh</a></center><br /><br />\n";
 		}
+
 		echo "<h2>Status</h2>";
 		echo "Current status: authorized<br /><br />\n";
 		echo "Access-Token:<br />" . $token->access_token . "<br /><br />\n";
@@ -187,32 +204,112 @@ class NibeGateway {
 		echo "Last update: " . $this->nibeAPI->last_token_update() . "<br />\n";
 		echo "Token expire time: " . $token->expires_in . "<br />\n";
 		echo "Remaining seconds: " . ($token->expires_in - (time() - $this->nibeAPI->last_token_update()) . "<br /><br />\n");
-		echo "<h2>Status response</h2>";
-		$response = $this->nibeAPI->readAPI("systems", $token, $success);
-		if (!$success)
-		{
-			echo "FAILED:<br />\n";
-			print_r($response);
-		}
-		else
-		{
-			echo "<pre>" . json_encode($response, JSON_PRETTY_PRINT) . "</pre>";
+
+		echo "<h2>System Information</h2>";
+		$success = false;
+		$systemsResponse = $this->nibeAPI->getSystems($token, $success);
+		
+		// Check if we got a valid response with systems
+		if ($systemsResponse && isset($systemsResponse->systems) && is_array($systemsResponse->systems) && count($systemsResponse->systems) > 0) {
+			echo "<h3>Systems Overview</h3>";
+			echo "<pre>" . json_encode($systemsResponse, JSON_PRETTY_PRINT) . "</pre>";
+			
+			// Display details for each system
+			foreach ($systemsResponse->systems as $system) {
+				echo "<h3>System Details: " . htmlspecialchars($system->systemId) . " (" . htmlspecialchars($system->name) . ")</h3>";
+				
+				// Display basic system info
+				echo "<h4>Basic Information</h4>";
+				echo "<ul>";
+				echo "<li>Security Level: " . htmlspecialchars($system->securityLevel) . "</li>";
+				echo "<li>Country: " . htmlspecialchars($system->country) . "</li>";
+				echo "<li>Has Alarm: " . ($system->hasAlarm ? "Yes" : "No") . "</li>";
+				echo "</ul>";
+				
+				// Display devices
+				if (isset($system->devices) && is_array($system->devices)) {
+					echo "<h4>Devices</h4>";
+					foreach ($system->devices as $device) {
+						echo "<div style='margin-left: 20px;'>";
+						echo "<h5>Device: " . htmlspecialchars($device->id) . "</h5>";
+						echo "<ul>";
+						echo "<li>Connection State: " . htmlspecialchars($device->connectionState) . "</li>";
+						echo "<li>Firmware Version: " . htmlspecialchars($device->currentFwVersion) . "</li>";
+						if (isset($device->product)) {
+							echo "<li>Product: " . htmlspecialchars($device->product->name) . "</li>";
+							echo "<li>Serial Number: " . htmlspecialchars($device->product->serialNumber) . "</li>";
+						}
+						echo "</ul>";
+						echo "</div>";
+					}
+				}
+				
+				// Get system details
+				$success = false;
+				$systemDetails = $this->nibeAPI->getSystemDetails($token, $system->systemId, $success);
+				if ($success) {
+					echo "<h4>System Information</h4>";
+					echo "<pre>" . json_encode($systemDetails, JSON_PRETTY_PRINT) . "</pre>";
+				}
+				
+				// Get system parameters
+				$success = false;
+				$parameters = $this->nibeAPI->getSystemParameters($token, $system->systemId, $success);
+				if ($success) {
+					echo "<h4>System Parameters</h4>";
+					echo "<pre>" . json_encode($parameters, JSON_PRETTY_PRINT) . "</pre>";
+				}
+				
+				// Get smart home mode
+				$success = false;
+				$smartHomeMode = $this->nibeAPI->getSystemSmartHomeMode($token, $system->systemId, $success);
+				if ($success) {
+					echo "<h4>Smart Home Mode</h4>";
+					echo "<pre>" . json_encode($smartHomeMode, JSON_PRETTY_PRINT) . "</pre>";
+				}
+				
+				// Get devices and their points
+				$success = false;
+				$devices = $this->nibeAPI->getDevices($token, $system->systemId, $success);
+				if ($success) {
+					echo "<h4>Devices</h4>";
+					echo "<pre>" . json_encode($devices, JSON_PRETTY_PRINT) . "</pre>";
+					
+					// Get points for each device
+					foreach ($devices as $device) {
+						$success = false;
+						$points = $this->nibeAPI->getDevicePoints($token, $device->id, $success);
+						if ($success) {
+							echo "<h5>Device Points: " . htmlspecialchars($device->id) . "</h5>";
+							echo "<pre>" . json_encode($points, JSON_PRETTY_PRINT) . "</pre>";
+						}
+					}
+				}
+			}
+		} else {
+			echo "<p>No systems found or error fetching systems.</p>";
+			if ($systemsResponse) {
+				echo "<pre>Debug Info: " . json_encode($systemsResponse, JSON_PRETTY_PRINT) . "</pre>";
+			}
 		}
 		?>
 		<h2>Query</h2>
 		<div><form>
 			<input type="hidden" name="mode" value="raw" />
 			<p>
-				Output format: <input type="radio" name="format" value="json" checked>json&nbsp;<input type="radio" name="format" value="pretty">pretty print
+				Output format: 
+				<input type="radio" name="format" value="json" checked>json&nbsp;
+				<input type="radio" name="format" value="pretty">pretty print&nbsp;
+				<input type="radio" name="format" value="loxone">loxone
 			</p>
 			<p>
 				Function:
-				<input type="text" name="exec" value="systems">&nbsp;
+				<input type="text" name="exec" value="systems/me">&nbsp;
 				<input type="submit" value="Submit">
 			</p>
 		</form></div>
 		<div>
-		<a href="https://api.nibeuplink.com/docs/v1/Functions">Nibe Uplink API Documentation</a><br />
+		<a href="https://api.myuplink.com/swagger/index.html">MyUplink API Documentation</a><br />
 		</div>
 		<?php
 	}

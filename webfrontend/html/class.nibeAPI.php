@@ -5,7 +5,9 @@ class NibeAPI {
 	var $redirectURL;
 	var $scopes;
 	var $debugActive;
-	function __construct($clientID, $clientSecret, $redirectURL, $scopes = "WRITESYSTEM+READSYSTEM", $debugActive = 0) {
+	var $apiBaseUrl = "https://api.myuplink.com/v2";
+
+	function __construct($clientID, $clientSecret, $redirectURL, $scopes = "READSYSTEM WRITESYSTEM offline_access", $debugActive = 0) {
 		$this->clientID = $clientID;
 		$this->clientSecret = $clientSecret;
 		$this->redirectURL = $redirectURL;
@@ -15,7 +17,7 @@ class NibeAPI {
 
 	function authorizationURL()
 	{
-		return "https://api.nibeuplink.com/oauth/authorize?response_type=code&client_id=" . $this->clientID . "&scope=" . $this->scopes . "&redirect_uri=" . $this->redirectURL . "&state=authorization";
+		return "https://api.myuplink.com/oauth/authorize?response_type=code&client_id=" . $this->clientID . "&scope=" . urlencode($this->scopes) . "&redirect_uri=" . urlencode($this->redirectURL) . "&state=authorization";
 	}
 
 	function authorize($CODE, $isRefresh = false)
@@ -23,25 +25,36 @@ class NibeAPI {
 		$ch = curl_init();
 		if ($isRefresh)
 		{
-			$pf = "&refresh_token=" . urlencode($CODE);
-			$grant_type = "refresh_token";
+			$postFields = array(
+				'grant_type' => 'refresh_token',
+				'client_id' => $this->clientID,
+				'client_secret' => $this->clientSecret,
+				'refresh_token' => $CODE
+			);
 		}
 		else
 		{
-			$pf = "&code=" . urlencode($CODE) . "&redirect_uri=" . $this->redirectURL . "&scope=" . urlencode($this->scopes);
-			$grant_type = "authorization_code";
+			$postFields = array(
+				'grant_type' => 'authorization_code',
+				'client_id' => $this->clientID,
+				'client_secret' => $this->clientSecret,
+				'code' => $CODE,
+				'redirect_uri' => $this->redirectURL
+			);
 		}
-		curl_setopt($ch, CURLOPT_URL,"https://api.nibeuplink.com/oauth/token");
+
+		curl_setopt($ch, CURLOPT_URL, "https://api.myuplink.com/oauth/token");
 		curl_setopt($ch, CURLOPT_POST, 1);
-		curl_setopt($ch, CURLOPT_POSTFIELDS, "grant_type=" . $grant_type . "&client_id=" . urlencode($this->clientID) . "&client_secret=" . urlencode($this->clientSecret) . $pf);
+		curl_setopt($ch, CURLOPT_POSTFIELDS, http_build_query($postFields));
 		curl_setopt($ch, CURLOPT_HTTPHEADER, array('Content-Type: application/x-www-form-urlencoded'));
-		// receive server response ...
 		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+
 		$response = curl_exec($ch);
 		$token = false;
+
 		if ($response === false)
 		{
-			echo 'Curl-Fehler: ' . curl_error($ch);
+			echo 'Curl Error: ' . curl_error($ch);
 		}
 		else
 		{
@@ -49,34 +62,42 @@ class NibeAPI {
 			{
 				case 200:
 					$jsonResponse = json_decode($response);
-					if ($jsonResponse != NULL || strlen(trim($token)) > 0)
+					if ($jsonResponse != NULL)
 					{
 						$token = $jsonResponse;
+						// Store token expiration time
+						$token->expires_at = time() + $token->expires_in;
 					} else {
 						echo 'Could not decode json response: ' . $response . '\n';
 					}
 				break;
 
 				default:
-					echo 'Unerwarter HTTP-Code: ' . $http_code . "\n";
+					echo 'Unexpected HTTP Code: ' . $http_code . "\n";
+					echo 'Response: ' . $response . "\n";
 			}
 		}
 		curl_close ($ch);
 		return $token;
 	}
+
 	function readAPI($URI, $token, &$success = 'undefined')
 	{
 		$ch = curl_init();
-		curl_setopt($ch, CURLOPT_URL,"https://api.nibeuplink.com/api/v1/" . $URI);
-		curl_setopt($ch, CURLOPT_HTTPHEADER, array("Authorization: Bearer " . $token->access_token));
-		// receive server response ...
+		curl_setopt($ch, CURLOPT_URL, $this->apiBaseUrl . "/" . $URI);
+		curl_setopt($ch, CURLOPT_HTTPHEADER, array(
+			"Authorization: Bearer " . $token->access_token,
+			"Accept: application/json",
+			"Content-Type: application/json"
+		));
 		curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 		$response = curl_exec($ch);
 		$data = false;
 		$success = false;
+
 		if ($response === false)
 		{
-			echo 'Curl-Fehler: ' . curl_error($ch);
+			echo 'Curl Error: ' . curl_error($ch);
 		}
 		else
 		{
@@ -84,11 +105,20 @@ class NibeAPI {
 			{
 				case 200:
 					$data = json_decode($response);
-					if ($data !== false) $success = true;
+					$success = true;  // Set success to true for any 200 response
 				break;
 
+				case 401:
+					// Token might be expired, try to refresh
+					if ($this->debugActive) echo "Token expired, attempting refresh...<br />\n";
+					$newToken = $this->authorize($token->refresh_token, true);
+					if ($newToken) {
+						$this->save_token($newToken);
+						return $this->readAPI($URI, $newToken, $success);
+					}
+					// Fall through to default case if refresh fails
 				default:
-					$data = "Unerwarter HTTP-Code: " . $http_code . "<br />\nResponse:<br />\n" . $response;
+					$data = "Unexpected HTTP Code: " . $http_code . "<br />\nResponse:<br />\n" . $response;
 			}
 		}
 		curl_close ($ch);
@@ -110,21 +140,24 @@ class NibeAPI {
 		$curl = curl_init();
 
 		curl_setopt_array($curl, array(
-		  CURLOPT_URL => "https://api.nibeuplink.com/api/v1/" . $URI,
-		  CURLOPT_RETURNTRANSFER => true,
-		  CURLOPT_CUSTOMREQUEST => $method,
-		  CURLOPT_POSTFIELDS => $postBody,
-		  CURLOPT_HTTPHEADER => array(
-			"Authorization: Bearer " . $token->access_token,
-			"Content-Type: application/json"
-		  ),
+			CURLOPT_URL => $this->apiBaseUrl . "/" . $URI,
+			CURLOPT_RETURNTRANSFER => true,
+			CURLOPT_CUSTOMREQUEST => $method,
+			CURLOPT_POSTFIELDS => $postBody,
+			CURLOPT_HTTPHEADER => array(
+				"Authorization: Bearer " . $token->access_token,
+				"Content-Type: application/json",
+				"Accept: application/json"
+			),
 		));
+
 		$response = curl_exec($curl);
 		$data = false;
 		$success = false;
+
 		if ($response === false)
 		{
-			echo 'Curl-Fehler: ' . curl_error($curl);
+			echo 'Curl Error: ' . curl_error($curl);
 		}
 		else
 		{
@@ -140,13 +173,23 @@ class NibeAPI {
 					$data = "Success";
 				break;
 
+				case 401:
+					// Token might be expired, try to refresh
+					if ($this->debugActive) echo "Token expired, attempting refresh...<br />\n";
+					$newToken = $this->authorize($token->refresh_token, true);
+					if ($newToken) {
+						$this->save_token($newToken);
+						return $this->postPutAPI($URI, $method, $postBody, $newToken, $success);
+					}
+					// Fall through to default case if refresh fails
 				default:
-					$data = "Unerwarter HTTP-Code: " . $http_code . "<br />\nResponse:<br />\n" . $response;
+					$data = "Unexpected HTTP Code: " . $http_code . "<br />\nResponse:<br />\n" . $response;
 			}
 		}
 		curl_close ($curl);
 		return $data;
 	}
+
 	function save_token($token)
 	{
 		if (!file_put_contents("token", serialize($token)))
@@ -156,6 +199,7 @@ class NibeAPI {
 		}
 		return true;
 	}
+
 	function load_token()
 	{
 		$token = @file_get_contents("token");
@@ -163,9 +207,9 @@ class NibeAPI {
 		{
 			return false;
 		}
-
 		return @unserialize($token);
 	}
+
 	function clear_token()
 	{
 		if (!file_put_contents("token", (string)"\n"))
@@ -175,15 +219,18 @@ class NibeAPI {
 		}
 		return true;
 	}
+
 	function last_token_update()
 	{
 		return filemtime("token");
 	}
+
 	function token_needs_update($token)
 	{
-		$diff = time() - $this->last_token_update();
-		return ($diff >= $token->expires_in);
+		// Check if token is about to expire (within 5 minutes)
+		return (time() + 300 >= $token->expires_at);
 	}
+
 	function checkToken()
 	{
 		$token = $this->load_token();
@@ -206,6 +253,43 @@ class NibeAPI {
 			if ($this->debugActive) echo "Successfully refreshed token.<br />\n";
 		}
 		return $token;
+	}
+
+	// New helper methods for common API endpoints
+	function getSystems($token)
+	{
+		return $this->readAPI("systems/me", $token);
+	}
+
+	function getSystemDetails($token, $systemId)
+	{
+		return $this->readAPI("systems/" . $systemId, $token);
+	}
+
+	function getSystemParameters($token, $systemId)
+	{
+		return $this->readAPI("systems/" . $systemId . "/parameters", $token);
+	}
+
+	function getSystemSmartHomeMode($token, $systemId)
+	{
+		return $this->readAPI("systems/" . $systemId . "/smart-home-mode", $token);
+	}
+
+	function setSystemSmartHomeMode($token, $systemId, $mode)
+	{
+		$postBody = json_encode(array("mode" => $mode));
+		return $this->putAPI("systems/" . $systemId . "/smart-home-mode", $postBody, $token);
+	}
+
+	function getDevices($token, $systemId)
+	{
+		return $this->readAPI("systems/" . $systemId . "/devices", $token);
+	}
+
+	function getDevicePoints($token, $deviceId)
+	{
+		return $this->readAPI("devices/" . $deviceId . "/points", $token);
 	}
 }
 ?>

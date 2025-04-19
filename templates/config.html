@@ -61,6 +61,21 @@
                                         </table>
                                 </div>
                         </form>
+                        <script>
+                                // Trim inputs on blur
+                                document.querySelectorAll('.textfield').forEach(input => {
+                                    input.addEventListener('blur', function() {
+                                        this.value = this.value.trim();
+                                    });
+                                });
+
+                                // Ensure trimmed values on form submit
+                                document.getElementById('main_form').addEventListener('submit', function(e) {
+                                    document.querySelectorAll('.textfield').forEach(input => {
+                                        input.value = input.value.trim();
+                                    });
+                                });
+                        </script>
                 </div>
         </div>
 </div>
